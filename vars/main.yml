@@ -1,0 +1,3 @@
+---
+# vars file for fpga-rsu
+fpga_rsu_driver_pkg_url: ""
