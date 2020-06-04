@@ -1,0 +1,3 @@
+---
+# defaults file for fpga-rsu
+fpga_rsu_driver_dir: '/usr/share/opae'

@@ -1,0 +1,117 @@
+---
+# Copyright 2019 Red Hat, Inc.
+# All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License. You may obtain
+# a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+# WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+# License for the specific language governing permissions and limitations
+# under the License.
+
+- name: Fail if fpga_rsu_driver_pkg_url is undefined and empty
+  fail:
+    msg: "fpga_rsu_driver_pkg_url is a mandatory variable"
+  when:
+    - not (( fpga_rsu_driver_pkg_url is defined) and (fpga_rsu_driver_pkg_url | length > 0))
+
+- name: Create fpga driver package directory if not exist
+  file:
+    path: "{{ fpga_rsu_driver_dir }}"
+    state: directory
+    mode: 0755
+
+- name: Copy and untar FPGA driver tarball
+  block:
+    - name: Set fact for rpm tarball name
+      set_fact:
+        fpga_rsu_tarball_name: "{{ fpga_rsu_driver_pkg_url | basename }}"
+
+    - name: Copy fpga driver tarball
+      copy:
+        src: "{{ fpga_rsu_driver_pkg_url }}"
+        dest: "{{ fpga_rsu_driver_dir }}/{{ fpga_rsu_tarball_name }}"
+      failed_when: false
+
+    - name: untar fpga driver tarball
+      unarchive:
+        src: "{{ fpga_rsu_driver_dir }}/{{ fpga_rsu_tarball_name }}"
+        dest: "{{ fpga_rsu_driver_dir }}"
+      register: fpga_driver_tarball_untar
+      failed_when: false
+
+- name: Check and remove opae packages if already installed
+  block:
+    - name: Check whether opae package already installed or not
+      shell: |-
+        set -o pipefail
+        rpm -qa | grep opae
+      register: rpm_opae_installed_check
+      ignore_errors: true
+
+    - name: remove previous opae packages
+      shell:
+        rpm -e "{{ rpm_opae_installed_check.stdout_lines | join(' ') }}"
+      register: old_opae_packages_removed
+      when: rpm_opae_installed_check.rc == 0
+      ignore_errors: true
+
+- name: Install packages and verify installation
+  block:
+    - name: setting fact for fpga driver rpm directory
+      set_fact:
+        fpga_driver_rpm_dir: "{{ fpga_rsu_driver_dir }}/{{ fpga_rsu_tarball_name | splitext | first | splitext | first }}"
+
+    - name: Setting fact for fpga install shell script
+      shell: |-
+        set -o pipefail
+        ls "{{ fpga_driver_rpm_dir }}" | grep *.sh
+      args:
+        chdir: "{{ fpga_driver_rpm_dir }}"
+      register: fpga_driver_install_script
+
+    - name: Install fpga drivers
+      shell:
+        "{{ fpga_driver_install_script }}" -y
+      args:
+        chdir: "{{ fpga_driver_rpm_dir }}"
+      register: opae_packages_installed
+      when: old_opae_packages_removed.rc == 0
+
+    - name: Fail when OPAE FPGA package installation failed
+      fail:
+        msg: "OPAE FPGA package installation failed."
+      when: opae_packages_installed.rc != 0
+
+    - name: Verify opae and intel packages installed
+      shell: |-
+        set -o pipefail
+        rpm -qa | grep 'opae'
+      when: opae_packages_installed.rc == 0
+
+    - name: Verify opae driver installation
+      shell: |-
+        set -o pipefail
+        lsmod | grep fpga
+        lsmod | grep pac_n3000_net
+      register: verify_opae_driver
+
+- name: Verify module is loaded in kernel and update flash
+  block:
+    - name: Verify linux has enumerated Intel FPGA PAC n3000 FPGA management Engine
+      shell: |-
+        set -o pipefail
+        lspci | grep 0b30
+      register: check_linux_enumerated_fpga_mgmt_engine
+
+    - name: Fail if opae driver installation failed
+      fail:
+        msg: >-
+          OPAE driver installation failed. Either module is not loaded in kernel or
+          linux failed to enumerated Intel FPGA PAC n3000 FPGA management Engine.
+      when: verify_opae_driver.rc != 0 or check_linux_enumerated_fpga_mgmt_engine.rc != 0
